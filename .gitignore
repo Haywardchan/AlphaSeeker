@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+*.egg-info/
+.streamlit/secrets.toml
+data/*
+!data/.gitkeep

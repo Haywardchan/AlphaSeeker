@@ -1,4 +1,4 @@
-"""Multi-symbol market data bundle for BRK.B, SPY, and VIX."""
+"""Multi-symbol market data bundle for a primary instrument, SPY, and VIX."""
 
 from __future__ import annotations
 
@@ -21,9 +21,14 @@ Downloader = Callable[..., pd.DataFrame]
 class MarketDataBundle:
     """Aligned daily OHLCV frames for primary and auxiliary symbols."""
 
-    brkb: pd.DataFrame
+    primary: pd.DataFrame
     spy: pd.DataFrame
     vix: pd.DataFrame
+
+    @property
+    def brkb(self) -> pd.DataFrame:
+        """Compatibility alias for callers using the original BRK-specific name."""
+        return self.primary
 
 
 class MultiSymbolProvider:
@@ -142,15 +147,15 @@ def fetch_market_bundle(
     downloader: Downloader | None = None,
     force_refresh: bool = False,
 ) -> MarketDataBundle:
-    """Download BRK.B, SPY, and VIX with shared caching."""
+    """Download the primary instrument, SPY, and VIX with shared caching."""
     return MultiSymbolProvider(config or DEFAULT_CONFIG, downloader=downloader).fetch(
         start, end, force_refresh=force_refresh
     )
 
 
-def synthetic_market_bundle(brkb: pd.DataFrame) -> MarketDataBundle:
-    """Build auxiliary frames from injected BRK.B bars for offline analysis."""
-    market = validate_ohlcv(brkb)
+def synthetic_market_bundle(primary: pd.DataFrame) -> MarketDataBundle:
+    """Build auxiliary frames from injected primary bars for offline analysis."""
+    market = validate_ohlcv(primary)
     spy = market.copy()
     spy["Close"] = market["Close"] * 0.45
     spy["Open"] = market["Open"] * 0.45

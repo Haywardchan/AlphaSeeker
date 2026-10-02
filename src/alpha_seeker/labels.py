@@ -65,6 +65,32 @@ def first_touch_labels(
     return pd.Series(labels, index=bars.index, name="first_touch", dtype="object")
 
 
+def ambiguous_first_touch_count(
+    bars: pd.DataFrame,
+    levels: pd.DataFrame,
+    *,
+    horizon: int = 10,
+) -> int:
+    """Count windows discarded because both barriers were touched on one daily bar."""
+    support = levels["support"].reindex(bars.index).to_numpy(dtype=float)
+    resistance = levels["resistance"].reindex(bars.index).to_numpy(dtype=float)
+    low = bars["Low"].to_numpy(dtype=float)
+    high = bars["High"].to_numpy(dtype=float)
+    ambiguous = 0
+    for index in range(len(bars) - horizon):
+        if not np.isfinite(support[index]) or not np.isfinite(resistance[index]):
+            continue
+        for future in range(index + 1, index + horizon + 1):
+            lower = low[future] <= support[index]
+            upper = high[future] >= resistance[index]
+            if lower and upper:
+                ambiguous += 1
+                break
+            if lower or upper:
+                break
+    return ambiguous
+
+
 def next_day_spread(bars: pd.DataFrame) -> pd.Series:
     """Return next-session intraday range as a fraction of today's close."""
     close = bars["Close"].to_numpy(dtype=float)
@@ -77,6 +103,7 @@ make_labels = first_touch_labels
 make_range_targets = future_extrema
 
 __all__ = [
+    "ambiguous_first_touch_count",
     "first_touch_labels",
     "future_extrema",
     "make_labels",

@@ -1,4 +1,4 @@
-"""Local NLP news fetching and impact scoring for BRK.B."""
+"""Local NLP news fetching and impact scoring for supported instruments."""
 
 from __future__ import annotations
 
@@ -16,14 +16,30 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 from .config import DEFAULT_CONFIG, AlphaConfig
 
-RELEVANCE_TERMS = (
-    "brk",
-    "brk.b",
-    "brk-b",
-    "berkshire",
-    "buffett",
-    "hathaway",
-)
+RELEVANCE_TERMS_BY_SYMBOL: dict[str, tuple[str, ...]] = {
+    "BRK-B": (
+        "brk",
+        "brk.b",
+        "brk-b",
+        "berkshire",
+        "buffett",
+        "hathaway",
+    ),
+    "VTI": (
+        "vti",
+        "vanguard total stock market",
+        "total stock market etf",
+        "total market index",
+        "crsp us total market",
+        "federal reserve",
+        "interest rates",
+        "stock market",
+        "market selloff",
+        "market rally",
+        "risk-off",
+        "risk-on",
+    ),
+}
 POSITIVE_TERMS = (
     "earnings beat",
     "buyback",
@@ -63,7 +79,7 @@ class NewsImpact:
 
 
 class YahooNewsProvider:
-    """Fetch recent BRK.B headlines from Yahoo Finance."""
+    """Fetch recent primary-instrument headlines from Yahoo Finance."""
 
     def __init__(
         self,
@@ -78,7 +94,7 @@ class YahooNewsProvider:
         self._analyzer = SentimentIntensityAnalyzer()
 
     def fetch(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
-        path = self.config.cache_dir / "news_brkb.json"
+        path = self.config.cache_dir / f"news_{self.config.ticker.lower()}.json"
         if not force_refresh and (cached := self._read_cache(path)) is not None:
             return cached
         items = self._download()
@@ -184,7 +200,7 @@ def _parse_article(
     ).strip()
     published = _parse_timestamp(content.get("pubDate", content.get("displayTime")))
     text = f"{title}. {summary}".strip()
-    relevance = _relevance_score(text)
+    relevance = _relevance_score(text, config.symbol)
     if relevance <= 0.0:
         return None
     sentiment = _headline_sentiment(text, analyzer)
@@ -204,9 +220,10 @@ def _headline_sentiment(text: str, analyzer: SentimentIntensityAnalyzer) -> floa
     return float(np_clip(base + adjustment, -1.0, 1.0))
 
 
-def _relevance_score(text: str) -> float:
+def _relevance_score(text: str, symbol: str) -> float:
     lowered = text.lower()
-    hits = sum(1 for term in RELEVANCE_TERMS if term in lowered)
+    terms = RELEVANCE_TERMS_BY_SYMBOL[symbol]
+    hits = sum(1 for term in terms if term in lowered)
     if hits == 0:
         return 0.0
     return float(min(1.0, 0.5 + 0.25 * hits))

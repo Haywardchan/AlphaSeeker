@@ -1,16 +1,22 @@
-# BRK.B Alpha Seeker
+# Alpha Seeker
 
-A local research dashboard for Berkshire Hathaway Class B (`BRK.B`). It uses adjusted
-daily Yahoo Finance bars (`BRK-B`) to estimate:
+A local research dashboard for Berkshire Hathaway Class B (`BRK.B`) and the Vanguard
+Total Stock Market ETF (`VTI`). A sidebar toggle switches the complete analysis between
+the two instruments. It uses adjusted daily Yahoo Finance bars to estimate:
 
 - nearest volatility-adjusted support and resistance zones;
 - probabilities that resistance, support, or neither is touched first within 10 sessions;
 - probability distributions for the 10-session path minimum and maximum;
 - a next-session intraday spread distribution via conditional quantile regression;
-- a proxy market-emotion stack from VIX, SPY, and BRK.B technicals;
+- a proxy market-emotion stack from VIX, SPY, and the selected instrument's technicals;
 - local NLP scoring of recent Yahoo Finance headlines;
 - fused `BUY`, `HOLD`, or `SELL / REDUCE` guidance combining technical, emotion, and news inputs;
-- walk-forward strategy results compared with BRK.B buy-and-hold.
+- walk-forward strategy results compared with the selected instrument's buy-and-hold.
+
+The dashboard separates **base technical guidance** from **final fused guidance** so an
+emotion/news adjustment cannot silently change a recommendation. Its comparison view can
+run BRK.B and VTI with identical settings and contrast guidance, probabilities, risk,
+relative performance, and SPY context.
 
 This is research software, not investment advice. Outputs are estimates from historical
 daily data, can be wrong, and do not guarantee alpha. Yahoo data is unofficial, intended
@@ -57,14 +63,21 @@ and recent headline sentiment. The signal backtest and Strategy Lab still use th
 technical rule only; news overlay is live-only because Yahoo does not provide archival
 headlines for historical replay.
 
+The webpage labels those backtests as technical-only evidence. They should not be read as
+historical validation of the final fused recommendation.
+
 ### Emotion and news overlays
 
-Emotion is a weighted composite of VIX level, SPY trend/RSI/volume, BRK.B RSI/volume,
-and a TRIN-shaped proxy derived from SPY up/down participation. It is explicitly
+Emotion is a weighted composite of VIX level, SPY trend/RSI/volume, selected-instrument
+RSI/volume, and a TRIN-shaped proxy derived from SPY up/down participation. It is explicitly
 approximate—not exchange-calculated TRIN or NYSE breadth.
 
-News uses VADER sentiment plus a small finance keyword overlay on recent BRK.B
-headlines fetched from Yahoo Finance. Impact is bounded and decays with headline age.
+News uses VADER sentiment plus instrument-specific relevance terms on recent BRK.B or
+VTI headlines fetched from Yahoo Finance. Impact is bounded and decays with headline age.
+
+Instrument profiles reduce duplicated SPY exposure and company-news weight for VTI while
+using a longer price-level history and stronger company-specific news sensitivity for
+BRK.B. These are explicit research assumptions, not independently proven optimal settings.
 
 Fusion applies transparent edge adjustments and stress gates (for example elevated VIX
 or strongly negative headline tone) before emitting final guidance.

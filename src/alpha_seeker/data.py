@@ -12,18 +12,20 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import DEFAULT_CONFIG, AlphaConfig
+from .config import DEFAULT_CONFIG, SUPPORTED_SYMBOLS, AlphaConfig
 
 BRK_SYMBOL = "BRK-B"
 OHLCV_COLUMNS: tuple[str, ...] = ("Open", "High", "Low", "Close", "Volume")
+OHLC_RELATIVE_TOLERANCE = 1e-10
 Downloader = Callable[..., pd.DataFrame]
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Normalize BRK.B spelling and reject unrelated instruments."""
+    """Normalize supported Yahoo ticker spellings."""
     normalized = symbol.strip().upper().replace(".", "-")
-    if normalized != BRK_SYMBOL:
-        raise ValueError(f"only {BRK_SYMBOL} is supported, got {symbol!r}")
+    if normalized not in SUPPORTED_SYMBOLS:
+        supported = ", ".join(SUPPORTED_SYMBOLS)
+        raise ValueError(f"symbol must be one of {supported}, got {symbol!r}")
     return normalized
 
 
@@ -61,9 +63,23 @@ def validate_ohlcv(frame: pd.DataFrame, *, allow_empty: bool = False) -> pd.Data
     prices = data[["Open", "High", "Low", "Close"]]
     if not np.isfinite(prices.to_numpy()).all() or (prices <= 0).any().any():
         raise ValueError("prices must be finite and positive")
-    if (data["High"] < prices[["Open", "Low", "Close"]].max(axis=1)).any():
+    highest_other = prices[["Open", "Low", "Close"]].max(axis=1)
+    invalid_high = (data["High"] < highest_other) & ~np.isclose(
+        data["High"],
+        highest_other,
+        rtol=OHLC_RELATIVE_TOLERANCE,
+        atol=0.0,
+    )
+    if invalid_high.any():
         raise ValueError("High is below another daily price")
-    if (data["Low"] > prices[["Open", "High", "Close"]].min(axis=1)).any():
+    lowest_other = prices[["Open", "High", "Close"]].min(axis=1)
+    invalid_low = (data["Low"] > lowest_other) & ~np.isclose(
+        data["Low"],
+        lowest_other,
+        rtol=OHLC_RELATIVE_TOLERANCE,
+        atol=0.0,
+    )
+    if invalid_low.any():
         raise ValueError("Low is above another daily price")
     if data["Volume"].dropna().lt(0).any():
         raise ValueError("Volume must be non-negative")
@@ -158,7 +174,7 @@ def download_ohlcv(
     progress: bool = False,
     downloader: Callable[..., Any] | None = None,
 ) -> pd.DataFrame:
-    """Download adjusted BRK-B bars without caching."""
+    """Download adjusted bars for a supported primary instrument without caching."""
     ticker = normalize_symbol(symbol)
     if downloader is None:
         try:

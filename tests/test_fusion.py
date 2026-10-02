@@ -79,3 +79,22 @@ def test_fusion_preserves_base_buy():
     fused = fuse_guidance(_base(Guidance.BUY), _emotion(-0.2), _news(-0.1), 0.05)
     assert fused.final_action is Guidance.BUY
     assert fused.base_action is Guidance.BUY
+
+
+def test_vti_profile_reduces_company_news_weight():
+    article_impact = _news(0.5)
+    brkb = fuse_guidance(
+        _base(),
+        _emotion(),
+        article_impact,
+        0.05,
+        config=AlphaConfig(symbol="BRK-B"),
+    )
+    vti = fuse_guidance(
+        _base(),
+        _emotion(),
+        article_impact,
+        0.05,
+        config=AlphaConfig(symbol="VTI"),
+    )
+    assert 0 < vti.news_adjustment < brkb.news_adjustment

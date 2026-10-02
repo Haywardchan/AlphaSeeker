@@ -41,6 +41,8 @@ class ModelDiagnostics:
     folds: int
     calibration_rows: int = 0
     calibration_temperature: float = 1.0
+    validation_start: pd.Timestamp | None = None
+    validation_end: pd.Timestamp | None = None
 
 
 @dataclass(slots=True)
@@ -233,16 +235,22 @@ def train_classifier(
         else float(selected_row["brier_score"])
     )
     diagnostics = ModelDiagnostics(
-        selected,
-        calibrated_loss,
-        calibrated_brier,
-        int(selected_row["validation_rows"]),
-        comparison.sort_values(["log_loss", "brier_score"], na_position="last").reset_index(
-            drop=True
+        model_name=selected,
+        log_loss=calibrated_loss,
+        brier_score=calibrated_brier,
+        validation_rows=int(selected_row["validation_rows"]),
+        model_comparison=comparison.sort_values(
+            ["log_loss", "brier_score"], na_position="last"
+        ).reset_index(drop=True),
+        folds=len(splits),
+        calibration_rows=calibration_rows,
+        calibration_temperature=temperature,
+        validation_start=(
+            pd.Timestamp(selected_oos.index.min()) if len(selected_oos) else None
         ),
-        len(splits),
-        calibration_rows,
-        temperature,
+        validation_end=(
+            pd.Timestamp(selected_oos.index.max()) if len(selected_oos) else None
+        ),
     )
     # Historical strategy simulations use the raw fold-held-out probabilities.
     # The late calibration block is valid for the latest forecast but would leak

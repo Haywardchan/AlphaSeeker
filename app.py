@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -7,13 +8,76 @@ from alpha_seeker.features import build_feature_frame
 from alpha_seeker.labels import next_day_spread
 from alpha_seeker.pipeline import AnalysisResult, run_analysis
 
-st.set_page_config(page_title="BRK.B Alpha Seeker", page_icon="📈", layout="wide")
-st.title("BRK.B Alpha Seeker")
-st.caption("Technical research for Berkshire Hathaway Class B · 10-session horizon")
+st.set_page_config(page_title="Alpha Seeker", page_icon="📈", layout="wide")
+
+DISPLAY_SYMBOLS = {"BRK.B": "BRK-B", "VTI": "VTI"}
+STRATEGY_NAMES = {
+    "defensive_probability_overlay": "Defensive probability overlay",
+    "trend_filter": "200-day trend filter",
+    "trend_probability_hybrid": "Trend and probability hybrid",
+    "support_pullback": "Support pullback",
+    "buy_and_hold": "Buy and hold",
+}
+
+
+def style_figure(figure: go.Figure, *, height: int | None = None) -> go.Figure:
+    """Apply one consistent, responsive dark chart style."""
+    figure.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin={"l": 40, "r": 30, "t": 45, "b": 40},
+        hovermode="x unified",
+    )
+    if height is not None:
+        figure.update_layout(height=height)
+    return figure
+
+
+def friendly_error(exc: Exception) -> tuple[str, str]:
+    """Map common provider and modelling failures to useful recovery steps."""
+    text = str(exc)
+    lowered = text.lower()
+    if "no data returned" in lowered or "yfinance" in lowered:
+        return "Yahoo Finance data is unavailable.", "Refresh shortly or check internet access."
+    if "at least" in lowered or "insufficient" in lowered:
+        return "There is not enough usable history for this analysis.", text
+    if "ohlc" in lowered or "high" in lowered or "low" in lowered:
+        return (
+            "Yahoo returned an inconsistent market-data row.",
+            "Refresh to download a clean copy.",
+        )
+    return "Analysis could not be completed.", text
+
+
+def normalized_close(frame: pd.DataFrame, index: pd.Index | None = None) -> pd.Series:
+    close = frame["Close"].astype(float)
+    if index is not None:
+        close = close.reindex(index).ffill().dropna()
+    return close / close.iloc[0]
+
+
+def action_badge(action: str) -> None:
+    colors = {
+        "BUY": ("#163d2b", "#78dba9"),
+        "HOLD": ("#3d3416", "#f1cf72"),
+        "SELL_REDUCE": ("#431f24", "#ff9aa5"),
+    }
+    background, foreground = colors[action]
+    label = action.replace("_", " / ")
+    st.markdown(
+        (
+            f"<span style='display:inline-block;padding:0.35rem 0.75rem;"
+            f"border-radius:0.35rem;background:{background};color:{foreground};"
+            f"font-weight:700'>Final guidance: {label}</span>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource(show_spinner="Training walk-forward models…")
 def load_analysis(
+    symbol: str,
     lookback_years: int,
     cost_bps: float,
     confidence: float,
@@ -21,6 +85,7 @@ def load_analysis(
     include_news: bool,
 ) -> AnalysisResult:
     return run_analysis(
+        symbol=symbol,
         lookback_years=lookback_years,
         transaction_cost_bps=cost_bps,
         confidence_margin=confidence,
@@ -31,21 +96,97 @@ def load_analysis(
 
 with st.sidebar:
     st.header("Research controls")
-    lookback = st.slider("Training history (years)", 8, 25, 15)
-    costs = st.number_input("Round-trip cost (bps)", 0.0, 100.0, 10.0, 5.0)
-    confidence = st.slider("Confidence margin", 0.0, 0.25, 0.05, 0.01)
-    include_emotion = st.toggle("Include emotion in guidance", value=True)
-    include_news = st.toggle("Include news in guidance", value=True)
+    display_symbol = st.radio(
+        "Instrument",
+        ("BRK.B", "VTI"),
+        horizontal=True,
+        help="BRK.B is a single company; VTI is a diversified total-market ETF.",
+    )
+    yahoo_symbol = DISPLAY_SYMBOLS[display_symbol]
+    lookback = st.slider(
+        "Training history (years)",
+        8,
+        25,
+        15,
+        help="Longer histories include more regimes but take longer to train.",
+    )
+    costs = st.number_input(
+        "Round-trip cost (bps)",
+        0.0,
+        100.0,
+        10.0,
+        5.0,
+        help="Estimated total entry and exit friction; 10 bps equals 0.10%.",
+    )
+    confidence = st.slider(
+        "Confidence margin",
+        0.0,
+        0.25,
+        0.05,
+        0.01,
+        help="Required upper-versus-lower probability lead for base guidance.",
+    )
+    include_emotion = st.toggle(
+        "Include emotion in guidance",
+        value=True,
+        help="Adjust the technical edge using VIX, SPY, and instrument indicators.",
+    )
+    include_news = st.toggle(
+        "Include news in guidance",
+        value=True,
+        help="Apply a bounded, recency-weighted Yahoo headline adjustment.",
+    )
+    load_comparison = st.toggle(
+        "Load BRK.B / VTI comparison",
+        value=False,
+        help="Runs the other instrument with identical settings and caches the result.",
+    )
     if st.button("Refresh data and models", use_container_width=True):
         st.cache_resource.clear()
+        st.session_state["refresh_requested"] = True
         st.rerun()
 
+if st.session_state.pop("refresh_requested", False):
+    st.toast("Market data and models refreshed.")
+
+instrument_name = (
+    "Berkshire Hathaway Class B"
+    if display_symbol == "BRK.B"
+    else "Vanguard Total Stock Market ETF"
+)
+st.title(f"{display_symbol} Alpha Seeker")
+st.caption(f"Technical research for {instrument_name} · 10-session horizon")
+
 try:
-    result = load_analysis(lookback, costs, confidence, include_emotion, include_news)
+    result = load_analysis(
+        yahoo_symbol,
+        lookback,
+        costs,
+        confidence,
+        include_emotion,
+        include_news,
+    )
 except Exception as exc:  # Streamlit should explain provider/model failures instead of crashing.
-    st.error(f"Analysis unavailable: {exc}")
-    st.info("Check internet access, then use “Refresh data and models.”")
+    title, recovery = friendly_error(exc)
+    st.error(title)
+    st.info(recovery)
     st.stop()
+
+other_result: AnalysisResult | None = None
+comparison_error: str | None = None
+if load_comparison:
+    other_symbol = "VTI" if yahoo_symbol == "BRK-B" else "BRK-B"
+    try:
+        other_result = load_analysis(
+            other_symbol,
+            lookback,
+            costs,
+            confidence,
+            include_emotion,
+            include_news,
+        )
+    except Exception as exc:
+        comparison_error = str(exc)
 
 price = result.current_price
 support = result.support
@@ -54,58 +195,151 @@ prob = result.probabilities
 signal = result.signal
 
 st.caption(
-    f"Yahoo symbol BRK-B · Last completed bar: {result.as_of:%Y-%m-%d} · "
-    f"{result.sample_count:,} model observations"
+    f"Yahoo symbol {yahoo_symbol} · Last completed bar: {result.as_of:%Y-%m-%d} · "
+    f"{result.sample_count:,} labelled observations · "
+    f"analysis cached {(pd.Timestamp.now() - result.loaded_at).total_seconds() / 60:.0f} min ago"
 )
 
-cols = st.columns(5)
-cols[0].metric("Last close", f"${price:,.2f}")
-cols[1].metric("Lower support", f"${support.price:,.2f}", f"{support.distance_pct:.1%}")
-cols[2].metric(
-    "Upper resistance", f"${resistance.price:,.2f}", f"+{resistance.distance_pct:.1%}"
+summary_cols = st.columns(3, gap="small")
+summary_cols[0].metric("Last close", f"${price:,.2f}")
+summary_cols[1].metric(
+    "10-session range midpoint",
+    f"${(result.range_summary.minimum.median + result.range_summary.maximum.median) / 2:,.2f}",
 )
-cols[3].metric("Final guidance", signal.action)
-cols[4].metric("Adjusted edge", f"{signal.adjusted_edge:.2%}")
+summary_cols[2].metric("Final guidance", signal.final_action.value, f"{signal.adjusted_edge:+.2%}")
+action_badge(signal.final_action.value)
 
 if result.data_is_stale:
-    st.warning("The latest cached daily bar appears stale. Guidance may not reflect the market.")
-
-with st.expander("Why this advice?"):
-    st.write(
-        f"Base technical guidance: **{result.base_signal.action.value}** "
-        f"({result.base_signal.edge:+.2%} edge)."
+    st.warning(
+        "The latest bar is more than two expected trading sessions old. "
+        "Treat guidance as stale until data refreshes."
     )
+
+st.subheader("How the final guidance was formed")
+flow = st.columns(4, gap="small")
+flow[0].metric(
+    "1 · Base technical",
+    result.base_signal.action.value,
+    f"{result.base_signal.edge:+.2%} edge",
+)
+flow[1].metric("2 · Emotion", f"{signal.emotion_adjustment:+.2%}")
+flow[2].metric("3 · News", f"{signal.news_adjustment:+.2%}")
+flow[3].metric("4 · Final", signal.final_action.value, f"{signal.adjusted_edge:+.2%} edge")
+if result.base_signal.action != signal.final_action:
+    st.info(
+        f"Fusion changed {result.base_signal.action.value} to {signal.final_action.value}. "
+        "The final result uses a supporting threshold equal to 75% of the base confidence "
+        "margin when no safety gate is active."
+    )
+
+with st.expander("Full decision explanation", expanded=True):
+    st.write(signal.rationale)
     st.write(
-        f"Emotion adjustment: {signal.emotion_adjustment:+.2%} · "
-        f"News adjustment: {signal.news_adjustment:+.2%} · "
-        f"Confidence margin used: {signal.confidence_margin_used:.1%}."
+        f"Current level method: **{support.source}** · support strength "
+        f"{support.strength:.0%} · resistance strength {resistance.strength:.0%}."
     )
     if signal.gates_applied:
         st.write("Gates applied: " + "; ".join(signal.gates_applied))
-    st.write(result.base_signal.rationale)
+
+with st.expander("Advice conditions and historical balance", expanded=True):
+    base = result.base_signal
+    condition_cols = st.columns(5, gap="small")
+    condition_cols[0].metric("Weighted upside", f"{base.weighted_upside:.2%}")
+    condition_cols[1].metric("Weighted downside", f"{base.weighted_downside:.2%}")
+    condition_cols[2].metric("Upper − lower probability", f"{base.confidence_spread:+.1%}")
+    condition_cols[3].metric("Required base margin", f"{confidence:.1%}")
+    condition_cols[4].metric("Estimated cost", f"{base.estimated_cost:.2%}")
+    st.markdown(
+        "- **Base BUY:** probability spread is at least the required margin and "
+        "weighted upside minus downside remains positive after cost.\n"
+        "- **Base SELL / REDUCE:** the symmetric downside condition clears the same margin "
+        "and cost tests.\n"
+        "- **Base HOLD:** neither direction clears both tests.\n"
+        "- **Final fusion:** a base BUY stays BUY unless the strong-negative-news gate "
+        "blocks it. A base HOLD can become BUY or SELL when it clears 75% of the margin "
+        "with positive adjusted edge."
+    )
+    action_counts = (
+        result.historical_advice["action"]
+        .value_counts()
+        .reindex(["BUY", "HOLD", "SELL_REDUCE"], fill_value=0)
+    )
+    action_balance = pd.DataFrame(
+        {
+            "action": ["BUY", "HOLD", "SELL / REDUCE"],
+            "observations": action_counts.to_numpy(),
+            "share": (action_counts / max(1, action_counts.sum())).to_numpy(),
+        }
+    )
+    st.caption("Fold-held-out technical advice distribution")
+    st.dataframe(
+        action_balance,
+        hide_index=True,
+        width="stretch",
+        column_config={"share": st.column_config.NumberColumn(format="percent")},
+    )
 
 st.subheader("10-session first-touch probabilities")
-pcols = st.columns(3)
-pcols[0].metric("Upper resistance first", f"{prob['upper_first']:.1%}")
-pcols[1].metric("Lower support first", f"{prob['lower_first']:.1%}")
-pcols[2].metric("Neither level", f"{prob['neither']:.1%}")
-st.info(signal.rationale)
+probability_fig = go.Figure(
+    go.Bar(
+        x=[prob["upper_first"], prob["lower_first"], prob["neither"]],
+        y=["Upper resistance", "Lower support", "Neither"],
+        orientation="h",
+        text=[
+            f"{prob['upper_first']:.1%}",
+            f"{prob['lower_first']:.1%}",
+            f"{prob['neither']:.1%}",
+        ],
+        textposition="auto",
+    )
+)
+probability_fig.update_layout(
+    xaxis={"title": "Probability", "tickformat": ".0%", "range": [0, 1]},
+    yaxis={"title": ""},
+    showlegend=False,
+)
+st.plotly_chart(style_figure(probability_fig, height=270), width="stretch")
 
 tab_names = [
-    "Price & levels",
-    "10-day min/max distributions",
-    "Next-day spread",
-    "Emotion & news",
-    "Model validation",
-    "Signal backtest",
-    "Strategy Lab",
+    "Overview · Price",
+    "Forecasts · 10-day range",
+    "Forecasts · Next session",
+    "Context · Emotion & news",
+    "Validation · Models",
+    "Validation · Technical backtest",
+    "Validation · Strategy Lab",
+    "Compare · BRK.B vs VTI",
 ]
-tab_chart, tab_range, tab_spread, tab_emotion, tab_validation, tab_backtest, tab_strategies = (
-    st.tabs(tab_names)
-)
+(
+    tab_chart,
+    tab_range,
+    tab_spread,
+    tab_emotion,
+    tab_validation,
+    tab_backtest,
+    tab_strategies,
+    tab_compare,
+) = st.tabs(tab_names)
 
 with tab_chart:
-    bars = result.bars.tail(300)
+    chart_controls = st.columns(2)
+    chart_sessions = chart_controls[0].select_slider(
+        "Price history shown",
+        options=[90, 180, 300, 504],
+        value=300,
+        format_func=lambda value: f"{value} sessions",
+    )
+    marker_mode = chart_controls[1].radio(
+        "Historical advice markers",
+        ("Action changes", "Every signal"),
+        horizontal=True,
+        help="Markers are fold-held-out technical advice, not reconstructed news-fused advice.",
+    )
+    bars = result.bars.tail(chart_sessions)
+    advice = result.historical_advice
+    if marker_mode == "Action changes":
+        advice = advice.loc[advice["action"].ne(advice["action"].shift())]
+    advice = advice.loc[advice.index.intersection(bars.index)]
     indicators = build_feature_frame(result.bars).iloc[-1]
     fig = go.Figure(
         go.Candlestick(
@@ -114,9 +348,56 @@ with tab_chart:
             high=bars["High"],
             low=bars["Low"],
             close=bars["Close"],
-            name="BRK.B",
+            name=display_symbol,
         )
     )
+    marker_styles = {
+        "BUY": {
+            "symbol": "triangle-up",
+            "color": "#78dba9",
+            "position": bars["Low"] * 0.99,
+            "label": "BUY",
+        },
+        "HOLD": {
+            "symbol": "circle",
+            "color": "#f1cf72",
+            "position": bars["Close"],
+            "label": "HOLD",
+        },
+        "SELL_REDUCE": {
+            "symbol": "triangle-down",
+            "color": "#ff9aa5",
+            "position": bars["High"] * 1.01,
+            "label": "SELL / REDUCE",
+        },
+    }
+    for action, marker in marker_styles.items():
+        action_rows = advice.loc[advice["action"] == action]
+        if action_rows.empty:
+            continue
+        marker_y = marker["position"].reindex(action_rows.index)
+        customdata = action_rows[["actual_outcome", "future_return"]].to_numpy()
+        fig.add_trace(
+            go.Scatter(
+                x=action_rows.index,
+                y=marker_y,
+                mode="markers",
+                name=f"OOS {marker['label']}",
+                marker={
+                    "symbol": marker["symbol"],
+                    "color": marker["color"],
+                    "size": 11,
+                    "line": {"width": 1},
+                },
+                customdata=customdata,
+                hovertemplate=(
+                    f"<b>{marker['label']}</b><br>"
+                    "Signal date: %{x|%Y-%m-%d}<br>"
+                    "Realized first touch: %{customdata[0]}<br>"
+                    "10-session return: %{customdata[1]:+.2%}<extra></extra>"
+                ),
+            )
+        )
     fig.add_hrect(
         y0=support.lower,
         y1=support.upper,
@@ -132,7 +413,43 @@ with tab_chart:
         annotation_text="Resistance zone",
     )
     fig.update_layout(height=620, xaxis_rangeslider_visible=False, yaxis_title="Price (USD)")
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(style_figure(fig, height=620), width="stretch")
+    st.caption(
+        "Markers are fold-held-out technical advice generated using information available "
+        "at that close and executable at the next open. They exclude historical news fusion."
+    )
+    audit = (
+        result.historical_advice.groupby("action", observed=True)
+        .agg(
+            observations=("action", "size"),
+            first_touch_hit_rate=("correct", "mean"),
+            average_10_session_return=("future_return", "mean"),
+        )
+        .reindex(["BUY", "HOLD", "SELL_REDUCE"])
+        .dropna(subset=["observations"])
+        .reset_index()
+    )
+    audit["action"] = audit["action"].replace({"SELL_REDUCE": "SELL / REDUCE"})
+    st.markdown("#### Historical advice audit")
+    st.dataframe(
+        audit,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "first_touch_hit_rate": st.column_config.NumberColumn(format="percent"),
+            "average_10_session_return": st.column_config.NumberColumn(format="percent"),
+        },
+    )
+    level_cols = st.columns(4, gap="small")
+    level_cols[0].metric("Support", f"${support.price:,.2f}", f"{support.distance_pct:.1%}")
+    level_cols[1].metric(
+        "Resistance", f"${resistance.price:,.2f}", f"+{resistance.distance_pct:.1%}"
+    )
+    level_cols[2].metric("Level method", support.source.replace("_", " ").title())
+    level_cols[3].metric(
+        "Level strength",
+        f"{(support.strength + resistance.strength) / 2:.0%}",
+    )
     icols = st.columns(5)
     icols[0].metric("RSI (14)", f"{indicators['rsi_14']:.1f}")
     icols[1].metric("ATR / price", f"{indicators['atr_pct_14']:.2%}")
@@ -189,13 +506,24 @@ with tab_range:
         )
     )
     dist_fig.update_layout(xaxis_title="Price (USD)", yaxis_title="Cumulative probability")
-    st.plotly_chart(dist_fig, width="stretch")
+    st.plotly_chart(style_figure(dist_fig, height=460), width="stretch")
     st.markdown("#### Range-model validation")
     st.dataframe(
         result.range_model.diagnostics.model_comparison,
         width="stretch",
         hide_index=True,
     )
+    range_diagnostics = result.range_model.diagnostics
+    range_validation = st.columns(3)
+    range_validation[0].metric(
+        "Minimum empirical 80% coverage",
+        f"{range_diagnostics.minimum_80_coverage:.1%}",
+    )
+    range_validation[1].metric(
+        "Maximum empirical 80% coverage",
+        f"{range_diagnostics.maximum_80_coverage:.1%}",
+    )
+    range_validation[2].metric("Validation folds", range_diagnostics.folds)
 
 with tab_spread:
     st.caption(
@@ -266,21 +594,38 @@ with tab_spread:
         barmode="overlay",
         height=520,
     )
-    st.plotly_chart(spread_fig, width="stretch")
+    st.plotly_chart(style_figure(spread_fig, height=520), width="stretch")
     st.markdown("#### Spread-model validation")
     st.dataframe(
         result.spread_model.diagnostics.model_comparison,
         width="stretch",
         hide_index=True,
     )
+    spread_diagnostics = result.spread_model.diagnostics
+    st.caption(
+        f"Empirical 80% walk-forward coverage: {spread_diagnostics.coverage_80:.1%} · "
+        f"validation {spread_diagnostics.validation_start:%Y-%m-%d} to "
+        f"{spread_diagnostics.validation_end:%Y-%m-%d}."
+    )
 
 with tab_emotion:
     emotion = result.emotion
     news = result.news
     st.caption(
-        "Emotion uses a proxy stack from VIX, SPY, and BRK.B. TRIN proxy is approximate, "
+        f"Emotion uses a proxy stack from VIX, SPY, and {display_symbol}. "
+        "TRIN proxy is approximate, "
         "not exchange-calculated TRIN. News scoring is local NLP on recent Yahoo headlines."
     )
+    if yahoo_symbol == "VTI":
+        st.info(
+            "VTI uses an ETF profile: less weight on overlapping SPY components and "
+            "company-news impact, with broader macro-market headline relevance."
+        )
+    else:
+        st.info(
+            "BRK.B uses a single-stock profile with a longer level history and stronger "
+            "company-specific news sensitivity."
+        )
     ecols = st.columns(5)
     ecols[0].metric("Emotion regime", emotion.regime.value)
     ecols[1].metric("Composite score", f"{emotion.composite_score:+.2f}")
@@ -312,7 +657,7 @@ with tab_emotion:
         yaxis2={"title": "VIX", "overlaying": "y", "side": "right"},
         height=420,
     )
-    st.plotly_chart(emotion_fig, width="stretch")
+    st.plotly_chart(style_figure(emotion_fig, height=420), width="stretch")
 
     st.markdown("#### Emotion components")
     component_rows = [
@@ -340,52 +685,97 @@ with tab_emotion:
             }
             for article in news.articles
         ]
-        st.dataframe(article_rows, width="stretch", hide_index=True)
+        st.dataframe(
+            article_rows,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "link": st.column_config.LinkColumn("Article", display_text="Open")
+            },
+        )
     else:
-        st.warning("No recent relevant BRK.B headlines were returned by Yahoo Finance.")
+        st.warning(
+            f"No recent relevant {display_symbol} headlines were returned by Yahoo Finance."
+        )
 
 with tab_validation:
     v = result.validation
-    vcols = st.columns(4)
+    vcols = st.columns(4, gap="small")
     vcols[0].metric("Selected classifier", v.model_name)
     vcols[1].metric("Walk-forward log loss", f"{v.log_loss:.3f}")
     vcols[2].metric("Multiclass Brier", f"{v.brier_score:.3f}")
-    vcols[3].metric("Validation rows", f"{v.validation_rows:,}")
+    vcols[3].metric("Walk-forward folds", v.folds)
+    detail_cols = st.columns(4, gap="small")
+    detail_cols[0].metric("Validation rows", f"{v.validation_rows:,}")
+    detail_cols[1].metric("Calibration rows", f"{v.calibration_rows:,}")
+    detail_cols[2].metric("Calibration temperature", f"{v.calibration_temperature:.2f}")
+    detail_cols[3].metric(
+        "Ambiguous labels excluded",
+        f"{result.ambiguous_label_rate:.1%}",
+        f"{result.ambiguous_label_count} windows",
+    )
     st.dataframe(v.model_comparison, width="stretch", hide_index=True)
     st.caption(
-        "Chronological folds use a forecast-horizon gap. Lower log loss and Brier scores "
-        "are better; they measure historical validation, not future certainty."
+        f"Chronological validation ran from {v.validation_start:%Y-%m-%d} to "
+        f"{v.validation_end:%Y-%m-%d} with a forecast-horizon gap. Lower log loss and "
+        "Brier scores are better; calibration and validation do not guarantee future accuracy."
     )
 
 with tab_backtest:
+    st.warning(
+        "Technical-only evidence: this historical backtest excludes the live emotion and "
+        "news overlays used by Final guidance."
+    )
     metrics = result.backtest.metrics
-    bcols = st.columns(6)
-    bcols[0].metric("Strategy return", f"{metrics['total_return']:.1%}")
-    bcols[1].metric("Buy & hold", f"{metrics['buy_hold_return']:.1%}")
+    bcols = st.columns(3, gap="small")
+    bcols[0].metric("Technical strategy return", f"{metrics['total_return']:.1%}")
+    bcols[1].metric(f"{display_symbol} buy & hold", f"{metrics['buy_hold_return']:.1%}")
     bcols[2].metric("Excess return", f"{metrics['excess_return']:.1%}")
-    bcols[3].metric("Max drawdown", f"{metrics['max_drawdown']:.1%}")
-    bcols[4].metric("Trades", f"{metrics['trades']:.0f}")
-    bcols[5].metric("Market exposure", f"{metrics['market_exposure']:.1%}")
+    risk_cols = st.columns(3, gap="small")
+    risk_cols[0].metric("Max drawdown", f"{metrics['max_drawdown']:.1%}")
+    risk_cols[1].metric("Trades", f"{metrics['trades']:.0f}")
+    risk_cols[2].metric("Market exposure", f"{metrics['market_exposure']:.1%}")
     equity = result.backtest.equity
     eq_fig = go.Figure()
     eq_fig.add_trace(go.Scatter(x=equity.index, y=equity["Strategy"], name="Strategy"))
-    eq_fig.add_trace(go.Scatter(x=equity.index, y=equity["BuyHold"], name="BRK.B buy & hold"))
+    eq_fig.add_trace(
+        go.Scatter(
+            x=equity.index,
+            y=equity["BuyHold"],
+            name=f"{display_symbol} buy & hold",
+        )
+    )
+    spy_growth = normalized_close(result.benchmark_bars, equity.index)
+    eq_fig.add_trace(
+        go.Scatter(
+            x=spy_growth.index,
+            y=spy_growth,
+            name="SPY passive benchmark",
+            line={"dash": "dot"},
+        )
+    )
     eq_fig.update_layout(yaxis_title="Growth of $1", xaxis_title="")
-    st.plotly_chart(eq_fig, width="stretch")
+    st.plotly_chart(style_figure(eq_fig, height=500), width="stretch")
     st.caption(
         f"Mean daily return in uptrends: {metrics['uptrend_daily_return']:.3%}; "
-        f"in downtrends: {metrics['downtrend_daily_return']:.3%}."
+        f"in downtrends: {metrics['downtrend_daily_return']:.3%}. "
+        f"SPY passive return over the displayed test window: {spy_growth.iloc[-1] - 1:.1%}."
     )
 
 with tab_strategies:
+    st.warning(
+        "Technical-only evidence: Strategy Lab excludes live emotion and headline adjustments."
+    )
     lab = result.strategy_lab
     st.info(lab.explanation)
     st.caption(
         f"Parameters were selected using OOS data through {lab.development_end:%Y-%m-%d}. "
         f"The leaderboard uses only the untouched holdout beginning "
-        f"{lab.holdout_start:%Y-%m-%d}; every position is executed next-open."
+        f"{lab.holdout_start:%Y-%m-%d}; every position is executed next-open. "
+        f"{len(lab.leaderboard)} strategy families were compared."
     )
     display = lab.leaderboard.copy()
+    display["strategy"] = display["strategy"].map(STRATEGY_NAMES).fillna(display["strategy"])
     for column in (
         "total_return",
         "buy_hold_return",
@@ -413,15 +803,18 @@ with tab_strategies:
         )
     )
     for name, strategy_result in lab.backtests.items():
+        is_winner = name == lab.winner
         lab_fig.add_trace(
             go.Scatter(
                 x=strategy_result.equity.index,
                 y=strategy_result.equity["Strategy"],
-                name=name,
+                name=STRATEGY_NAMES.get(name, name),
+                line={"width": 4 if is_winner else 1},
+                opacity=1.0 if is_winner else 0.45,
             )
         )
     lab_fig.update_layout(yaxis_title="Growth of $1", xaxis_title="")
-    st.plotly_chart(lab_fig, width="stretch")
+    st.plotly_chart(style_figure(lab_fig, height=500), width="stretch")
 
     exposure_fig = go.Figure()
     for name in lab.exposures:
@@ -429,7 +822,7 @@ with tab_strategies:
             go.Scatter(
                 x=lab.exposures.index,
                 y=lab.exposures[name],
-                name=name,
+                name=STRATEGY_NAMES.get(name, name),
                 line_shape="hv",
             )
         )
@@ -438,7 +831,94 @@ with tab_strategies:
         yaxis_range=[-0.05, 1.05],
         xaxis_title="",
     )
-    st.plotly_chart(exposure_fig, width="stretch")
+    st.plotly_chart(style_figure(exposure_fig, height=420), width="stretch")
+
+with tab_compare:
+    st.caption(
+        "Same settings and as-of methodology for both instruments. BRK.B is a concentrated "
+        "single stock; VTI is a diversified total-market ETF."
+    )
+    if comparison_error:
+        st.error(f"Comparison unavailable: {comparison_error}")
+    elif other_result is None:
+        st.info("Enable “Load BRK.B / VTI comparison” in the sidebar.")
+    else:
+        analyses = {
+            display_symbol: result,
+            "VTI" if display_symbol == "BRK.B" else "BRK.B": other_result,
+        }
+        comparison_rows = []
+        for name, analysis in analyses.items():
+            comparison_rows.append(
+                {
+                    "instrument": name,
+                    "base guidance": analysis.base_signal.action.value,
+                    "final guidance": analysis.signal.final_action.value,
+                    "adjusted edge": analysis.signal.adjusted_edge,
+                    "upper first": analysis.probabilities["upper_first"],
+                    "lower first": analysis.probabilities["lower_first"],
+                    "emotion": analysis.emotion.regime.value,
+                    "technical return": analysis.backtest.metrics["total_return"],
+                    "buy & hold": analysis.backtest.metrics["buy_hold_return"],
+                    "max drawdown": analysis.backtest.metrics["max_drawdown"],
+                    "lab winner": STRATEGY_NAMES.get(
+                        analysis.strategy_lab.winner,
+                        analysis.strategy_lab.winner,
+                    ),
+                }
+            )
+        st.dataframe(
+            comparison_rows,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "adjusted edge": st.column_config.NumberColumn(format="percent"),
+                "upper first": st.column_config.NumberColumn(format="percent"),
+                "lower first": st.column_config.NumberColumn(format="percent"),
+                "technical return": st.column_config.NumberColumn(format="percent"),
+                "buy & hold": st.column_config.NumberColumn(format="percent"),
+                "max drawdown": st.column_config.NumberColumn(format="percent"),
+            },
+        )
+        common = result.bars.index.intersection(other_result.bars.index)
+        selected_growth = normalized_close(result.bars, common)
+        other_growth = normalized_close(other_result.bars, common)
+        spy_growth = normalized_close(result.benchmark_bars, common)
+        comparison_fig = go.Figure()
+        comparison_fig.add_trace(
+            go.Scatter(x=common, y=selected_growth, name=display_symbol)
+        )
+        other_display = "VTI" if display_symbol == "BRK.B" else "BRK.B"
+        comparison_fig.add_trace(
+            go.Scatter(x=common, y=other_growth, name=other_display)
+        )
+        comparison_fig.add_trace(
+            go.Scatter(
+                x=common,
+                y=spy_growth,
+                name="SPY",
+                line={"dash": "dot"},
+            )
+        )
+        comparison_fig.update_layout(
+            title="Relative growth over shared history",
+            xaxis_title="Date",
+            yaxis_title="Growth of $1",
+        )
+        st.plotly_chart(style_figure(comparison_fig, height=520), width="stretch")
+        correlation = result.bars["Close"].pct_change().corr(
+            other_result.bars["Close"].pct_change()
+        )
+        comparison_metrics = st.columns(3)
+        comparison_metrics[0].metric("Daily-return correlation", f"{correlation:.2f}")
+        comparison_metrics[1].metric(
+            f"{display_symbol} shared-history return",
+            f"{selected_growth.iloc[-1] - 1:.1%}",
+        )
+        comparison_metrics[2].metric(
+            f"{other_display} shared-history return",
+            f"{other_growth.iloc[-1] - 1:.1%}",
+        )
 
 st.divider()
 st.caption(

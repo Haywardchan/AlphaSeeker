@@ -47,7 +47,7 @@ def fuse_guidance(
         if include_emotion
         else 0.0
     )
-    news_adj = cfg.news_weight * news.impact_score if include_news else 0.0
+    news_adj = cfg.effective_news_weight * news.impact_score if include_news else 0.0
     adjusted_buy_edge = buy_edge + emotion_adj + news_adj
     adjusted_reduce_edge = reduce_edge - emotion_adj - news_adj
     margin = confidence_margin

@@ -3,7 +3,12 @@ import pandas as pd
 import pytest
 
 from alpha_seeker.config import AlphaConfig
-from alpha_seeker.data import YFinanceProvider, normalize_ohlcv, validate_ohlcv
+from alpha_seeker.data import (
+    YFinanceProvider,
+    normalize_ohlcv,
+    normalize_symbol,
+    validate_ohlcv,
+)
 from alpha_seeker.features import atr, make_features
 from alpha_seeker.levels import causal_level_frame, estimate_levels
 
@@ -18,11 +23,35 @@ def test_normalize_yahoo_multiindex_and_dates(bars):
     assert result.dtypes.eq("float64").all()
 
 
+def test_supported_symbols_are_normalized_and_invalid_symbols_rejected():
+    assert normalize_symbol("brk.b") == "BRK-B"
+    assert normalize_symbol(" vti ") == "VTI"
+    assert AlphaConfig(symbol="vti").ticker == "VTI"
+    assert AlphaConfig(symbol="BRK.B").profile.level_lookback > AlphaConfig(
+        symbol="VTI"
+    ).profile.level_lookback
+    assert AlphaConfig(symbol="VTI").effective_news_weight < AlphaConfig(
+        symbol="BRK.B"
+    ).effective_news_weight
+    with pytest.raises(ValueError, match="BRK-B, VTI"):
+        AlphaConfig(symbol="SPY")
+
+
 def test_invalid_ohlc_is_rejected(bars):
     bad = bars.iloc[:3].copy()
     bad.iloc[0, bad.columns.get_loc("High")] = 1
     with pytest.raises(ValueError, match="High"):
         validate_ohlcv(bad)
+
+
+def test_tiny_adjusted_ohlc_rounding_difference_is_allowed(bars):
+    rounded = bars.iloc[:3].copy()
+    highest_other = rounded.iloc[0][["Open", "Low", "Close"]].max()
+    rounded.iloc[0, rounded.columns.get_loc("High")] = (
+        highest_other - np.finfo(float).eps * highest_other
+    )
+    result = validate_ohlcv(rounded)
+    assert len(result) == 3
 
 
 def test_features_are_causal(bars):

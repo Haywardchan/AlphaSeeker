@@ -65,6 +65,22 @@ def test_backtest_executes_close_signal_at_next_open():
     assert np.isclose(result.equity.iloc[0]["BuyHold"], result.equity.iloc[0]["Strategy"])
 
 
+def test_backtest_allows_tiny_adjusted_ohlc_rounding_difference():
+    index = pd.bdate_range("2024-01-01", periods=4)
+    bars = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0, 102.0, 103.0],
+            "High": [100.0 - 1e-12, 102.0, 103.0, 104.0],
+            "Low": [99.0, 100.0, 101.0, 102.0],
+            "Close": [100.0, 101.0, 102.0, 103.0],
+        },
+        index=index,
+    )
+    signals = pd.Series(["HOLD"] * 4, index=index)
+    result = run_backtest(bars, signals)
+    assert not result.equity.empty
+
+
 def test_fractional_exposure_is_next_open_and_costed():
     index = pd.bdate_range("2024-01-01", periods=5)
     bars = pd.DataFrame(

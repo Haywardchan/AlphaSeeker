@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "brkb-alpha-seeker"
 version = "0.1.0"
-description = "Research dashboard for BRK.B technical analysis"
+description = "Research dashboard for BRK.B and VTI technical analysis"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

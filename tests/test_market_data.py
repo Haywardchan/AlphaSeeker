@@ -10,9 +10,10 @@ from alpha_seeker.news import YahooNewsProvider, score_news
 
 def test_synthetic_market_bundle_aligns_symbols(bars):
     bundle = synthetic_market_bundle(bars)
-    assert len(bundle.brkb) == len(bars)
-    assert bundle.spy.index.equals(bundle.brkb.index)
-    assert bundle.vix.index.equals(bundle.brkb.index)
+    assert len(bundle.primary) == len(bars)
+    assert bundle.brkb is bundle.primary
+    assert bundle.spy.index.equals(bundle.primary.index)
+    assert bundle.vix.index.equals(bundle.primary.index)
 
 
 def test_multi_symbol_provider_uses_cache(tmp_path, bars):
@@ -77,6 +78,21 @@ def test_score_news_positive_headline():
     assert impact.confidence > 0
 
 
+def test_score_news_supports_vti_headline():
+    config = AlphaConfig(symbol="VTI")
+    impact = score_news(
+        [
+            _headline(
+                "VTI rises as the total market index gains",
+                summary="Vanguard Total Stock Market ETF update.",
+            )
+        ],
+        config,
+    )
+    assert impact.aggregate_sentiment > 0
+    assert impact.articles
+
+
 def test_score_news_filters_irrelevant_headline():
     impact = score_news([
         _headline(
@@ -108,3 +124,22 @@ def test_yahoo_news_provider_cache(tmp_path):
     assert len(first) == 1
     assert len(second) == 1
     assert calls["count"] == 1
+
+
+def test_yahoo_news_cache_is_separate_per_symbol(tmp_path):
+    calls: list[str] = []
+
+    def fetcher(symbol: str, _count: int) -> list[dict]:
+        calls.append(symbol)
+        return [_headline(f"{symbol} market update")]
+
+    brkb = YahooNewsProvider(AlphaConfig(cache_dir=tmp_path), fetcher=fetcher)
+    vti = YahooNewsProvider(AlphaConfig(symbol="VTI", cache_dir=tmp_path), fetcher=fetcher)
+    brkb.fetch(force_refresh=True)
+    vti.fetch(force_refresh=True)
+    brkb.fetch()
+    vti.fetch()
+
+    assert calls == ["BRK-B", "VTI"]
+    assert (tmp_path / "news_brk-b.json").is_file()
+    assert (tmp_path / "news_vti.json").is_file()

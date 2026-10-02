@@ -1,4 +1,4 @@
-"""Proxy market-emotion indicators from VIX, SPY, and BRK.B."""
+"""Proxy market-emotion indicators from VIX, SPY, and the primary instrument."""
 
 from __future__ import annotations
 
@@ -29,18 +29,6 @@ class EmotionSnapshot:
     history: pd.DataFrame
 
 
-DEFAULT_COMPONENT_WEIGHTS: dict[str, float] = {
-    "vix_zscore": 0.20,
-    "vix_term_proxy": 0.10,
-    "spy_trend": 0.20,
-    "spy_rsi": 0.10,
-    "spy_volume_z": 0.05,
-    "stock_rsi": 0.15,
-    "stock_volume_z": 0.10,
-    "trin_proxy": 0.10,
-}
-
-
 def compute_emotion(
     bundle: MarketDataBundle,
     config: AlphaConfig | None = None,
@@ -48,29 +36,31 @@ def compute_emotion(
     history_days: int = 90,
 ) -> EmotionSnapshot:
     """Return the latest proxy emotion snapshot and recent history."""
+    cfg = config or AlphaConfig()
+    weights = dict(cfg.profile.emotion_weights)
     aligned = _align_bundle(bundle)
     latest = _latest_components(aligned)
     normalized = {name: _normalize_component(name, value) for name, value in latest.items()}
-    composite = _weighted_composite(normalized, DEFAULT_COMPONENT_WEIGHTS)
+    composite = _weighted_composite(normalized, weights)
     regime = _regime_from_score(composite)
-    history = _emotion_history(aligned, history_days, DEFAULT_COMPONENT_WEIGHTS)
+    history = _emotion_history(aligned, history_days, weights)
     return EmotionSnapshot(
         composite_score=composite,
         regime=regime,
         components={**latest, **{f"{key}_score": value for key, value in normalized.items()}},
         trin_proxy=float(latest["trin_proxy"]),
-        as_of=pd.Timestamp(aligned.brkb.index[-1]),
+        as_of=pd.Timestamp(aligned.primary.index[-1]),
         history=history,
     )
 
 
 def _align_bundle(bundle: MarketDataBundle) -> MarketDataBundle:
-    common = bundle.brkb.index.intersection(bundle.spy.index).intersection(bundle.vix.index)
+    common = bundle.primary.index.intersection(bundle.spy.index).intersection(bundle.vix.index)
     if len(common) < 30:
         raise ValueError("insufficient overlapping market history for emotion analysis")
     common = common.sort_values()
     return MarketDataBundle(
-        bundle.brkb.loc[common],
+        bundle.primary.loc[common],
         bundle.spy.loc[common],
         bundle.vix.loc[common],
     )
@@ -83,7 +73,7 @@ def _latest_components(bundle: MarketDataBundle) -> dict[str, float]:
 
 
 def _component_frame(bundle: MarketDataBundle) -> pd.DataFrame:
-    brkb, spy, vix = bundle.brkb, bundle.spy, bundle.vix
+    primary, spy, vix = bundle.primary, bundle.spy, bundle.vix
     vix_close = vix["Close"].astype(float)
     vix_mean = vix_close.rolling(252, min_periods=60).mean()
     vix_std = vix_close.rolling(252, min_periods=60).std(ddof=0).replace(0, np.nan)
@@ -94,8 +84,8 @@ def _component_frame(bundle: MarketDataBundle) -> pd.DataFrame:
     spy_trend = spy_close / spy_close.rolling(200, min_periods=100).mean() - 1.0
     spy_rsi = rsi(spy_close, 14)
     spy_volume_z = _volume_zscore(spy["Volume"])
-    stock_rsi = rsi(brkb["Close"].astype(float), 14)
-    stock_volume_z = _volume_zscore(brkb["Volume"])
+    stock_rsi = rsi(primary["Close"].astype(float), 14)
+    stock_volume_z = _volume_zscore(primary["Volume"])
     trin_proxy = _trin_proxy(spy)
     return pd.DataFrame(
         {
@@ -108,7 +98,7 @@ def _component_frame(bundle: MarketDataBundle) -> pd.DataFrame:
             "stock_volume_z": stock_volume_z,
             "trin_proxy": trin_proxy,
         },
-        index=brkb.index,
+        index=primary.index,
     ).replace([np.inf, -np.inf], np.nan)
 
 

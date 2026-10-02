@@ -16,6 +16,7 @@ from .range_model import (
     _cdf_at,
     _prediction_row,
     _select_and_calibrate,
+    _walk_forward_interval_coverage,
 )
 
 
@@ -25,6 +26,9 @@ class SpreadDiagnostics:
     selected_model: str
     validation_rows: int
     folds: int
+    coverage_80: float = float("nan")
+    validation_start: pd.Timestamp | None = None
+    validation_end: pd.Timestamp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,11 +160,23 @@ def train_spread_model(
         models[q].predict(latest)[0] + adjustment
         for q, adjustment in zip(REQUIRED_QUANTILES, adjustments, strict=True)
     ]
+    coverage, folds, validation_start, validation_end = (
+        _walk_forward_interval_coverage(
+            x,
+            y,
+            validation_rows,
+            1,
+            int(cfg.random_state),
+        )
+    )
     diagnostics = SpreadDiagnostics(
-        pd.DataFrame(comparisons),
-        selected,
-        validation_rows if train_end >= 20 else 0,
-        1 if train_end >= 20 else 0,
+        model_comparison=pd.DataFrame(comparisons),
+        selected_model=selected,
+        validation_rows=validation_rows if train_end >= 20 else 0,
+        folds=folds,
+        coverage_80=coverage,
+        validation_start=validation_start,
+        validation_end=validation_end,
     )
     return SpreadModel(
         current_price,

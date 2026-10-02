@@ -1,4 +1,4 @@
-"""Validated configuration for BRK-B daily analytics."""
+"""Validated configuration for supported daily analytics instruments."""
 
 from __future__ import annotations
 
@@ -6,6 +6,52 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+SUPPORTED_SYMBOLS: tuple[str, ...] = ("BRK-B", "VTI")
+
+
+@dataclass(frozen=True, slots=True)
+class InstrumentProfile:
+    """Instrument-specific assumptions layered over shared model settings."""
+
+    display_name: str
+    level_lookback: int
+    news_weight_multiplier: float
+    emotion_weights: tuple[tuple[str, float], ...]
+
+
+INSTRUMENT_PROFILES: dict[str, InstrumentProfile] = {
+    "BRK-B": InstrumentProfile(
+        "Berkshire Hathaway Class B",
+        756,
+        1.0,
+        (
+            ("vix_zscore", 0.20),
+            ("vix_term_proxy", 0.10),
+            ("spy_trend", 0.20),
+            ("spy_rsi", 0.10),
+            ("spy_volume_z", 0.05),
+            ("stock_rsi", 0.15),
+            ("stock_volume_z", 0.10),
+            ("trin_proxy", 0.10),
+        ),
+    ),
+    "VTI": InstrumentProfile(
+        "Vanguard Total Stock Market ETF",
+        504,
+        0.625,
+        (
+            ("vix_zscore", 0.25),
+            ("vix_term_proxy", 0.10),
+            ("spy_trend", 0.10),
+            ("spy_rsi", 0.05),
+            ("spy_volume_z", 0.025),
+            ("stock_rsi", 0.25),
+            ("stock_volume_z", 0.125),
+            ("trin_proxy", 0.10),
+        ),
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +99,9 @@ class AlphaConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", self.symbol.strip().upper().replace(".", "-"))
         object.__setattr__(self, "cache_dir", Path(self.cache_dir))
-        if self.symbol != "BRK-B":
-            raise ValueError("symbol must be Berkshire Hathaway class B (BRK-B)")
+        if self.symbol not in SUPPORTED_SYMBOLS:
+            supported = ", ".join(SUPPORTED_SYMBOLS)
+            raise ValueError(f"symbol must be one of: {supported}")
         if self.interval != "1d":
             raise ValueError("only daily ('1d') data is supported")
         for name in (
@@ -98,6 +145,15 @@ class AlphaConfig:
     def ticker(self) -> str:
         """Ticker spelling accepted by Yahoo Finance."""
         return self.symbol
+
+    @property
+    def profile(self) -> InstrumentProfile:
+        """Return assumptions tailored to the selected instrument."""
+        return INSTRUMENT_PROFILES[self.symbol]
+
+    @property
+    def effective_news_weight(self) -> float:
+        return self.news_weight * self.profile.news_weight_multiplier
 
     @property
     def atr_period(self) -> int:

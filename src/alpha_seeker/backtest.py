@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .data import OHLC_RELATIVE_TOLERANCE
 from .signals import Guidance
 
 
@@ -232,9 +233,23 @@ def _validated_bars(bars: pd.DataFrame) -> pd.DataFrame:
     result = result.astype(float)
     if not np.isfinite(result.to_numpy()).all() or (result <= 0).any().any():
         raise ValueError("OHLC prices must be finite and positive")
-    if (result["High"] < result[["Open", "Close", "Low"]].max(axis=1)).any():
+    highest_other = result[["Open", "Close", "Low"]].max(axis=1)
+    invalid_high = (result["High"] < highest_other) & ~np.isclose(
+        result["High"],
+        highest_other,
+        rtol=OHLC_RELATIVE_TOLERANCE,
+        atol=0.0,
+    )
+    if invalid_high.any():
         raise ValueError("High must be at least Open, Close, and Low")
-    if (result["Low"] > result[["Open", "Close", "High"]].min(axis=1)).any():
+    lowest_other = result[["Open", "Close", "High"]].min(axis=1)
+    invalid_low = (result["Low"] > lowest_other) & ~np.isclose(
+        result["Low"],
+        lowest_other,
+        rtol=OHLC_RELATIVE_TOLERANCE,
+        atol=0.0,
+    )
+    if invalid_low.any():
         raise ValueError("Low must be at most Open, Close, and High")
     return result
 

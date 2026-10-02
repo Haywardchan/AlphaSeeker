@@ -1,4 +1,4 @@
-"""End-to-end app-facing BRK-B analysis pipeline."""
+"""End-to-end app-facing analysis pipeline for supported instruments."""
 
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from .data import validate_ohlcv
 from .emotion import EmotionSnapshot, compute_emotion
 from .features import make_features
 from .fusion import FusedRecommendation, fuse_guidance
-from .labels import first_touch_labels, future_extrema, next_day_spread
+from .labels import (
+    ambiguous_first_touch_count,
+    first_touch_labels,
+    future_extrema,
+    next_day_spread,
+)
 from .levels import PriceZone, causal_level_frame, estimate_levels
 from .market_data import MarketDataBundle, fetch_market_bundle, synthetic_market_bundle
 from .model import ModelDiagnostics, train_classifier
@@ -43,8 +48,11 @@ class StrategyLabResult:
 
 @dataclass(frozen=True, slots=True)
 class AnalysisResult:
+    symbol: str
     bars: pd.DataFrame
+    benchmark_bars: pd.DataFrame
     as_of: pd.Timestamp
+    loaded_at: pd.Timestamp
     current_price: float
     support: PriceZone
     resistance: PriceZone
@@ -59,8 +67,11 @@ class AnalysisResult:
     spread_model: SpreadModel
     spread_summary: SpreadSummary
     backtest: BacktestResult
+    historical_advice: pd.DataFrame
     strategy_lab: StrategyLabResult
     sample_count: int
+    ambiguous_label_count: int
+    ambiguous_label_rate: float
     data_is_stale: bool
 
 
@@ -69,6 +80,7 @@ def run_analysis(
     transaction_cost_bps: float = 10.0,
     confidence_margin: float = 0.05,
     *,
+    symbol: str = "BRK-B",
     bars: pd.DataFrame | None = None,
     bundle: MarketDataBundle | None = None,
     news_items: list[dict[str, Any]] | None = None,
@@ -78,15 +90,15 @@ def run_analysis(
     """Run causal features, temporal models, current guidance, and OOS backtest."""
     if lookback_years < 1:
         raise ValueError("lookback_years must be positive")
-    config = AlphaConfig(transaction_cost_bps=transaction_cost_bps)
+    config = AlphaConfig(symbol=symbol, transaction_cost_bps=transaction_cost_bps)
     if bundle is not None:
-        market = validate_ohlcv(bundle.brkb)
+        market = validate_ohlcv(bundle.primary)
         market_bundle = bundle
     elif bars is None:
         end = pd.Timestamp.now(tz="UTC").normalize() + pd.Timedelta(days=1)
         start = end - pd.DateOffset(years=lookback_years)
         market_bundle = fetch_market_bundle(config, start=start.date(), end=end.date())
-        market = market_bundle.brkb
+        market = market_bundle.primary
     else:
         market = validate_ohlcv(bars)
         market_bundle = synthetic_market_bundle(market)
@@ -100,9 +112,10 @@ def run_analysis(
     if len(market) < 80:
         raise ValueError("at least 80 daily bars are required")
 
+    level_lookback = config.profile.level_lookback
     levels = causal_level_frame(
         market,
-        lookback=min(config.level_lookback, max(20, len(market) // 2)),
+        lookback=min(level_lookback, max(20, len(market) // 2)),
         grid_size=128,
         update_every=20,
     )
@@ -120,6 +133,9 @@ def run_analysis(
         )
     )
     labels = first_touch_labels(market, levels, horizon=config.horizon)
+    ambiguous_labels = ambiguous_first_touch_count(
+        market, levels, horizon=config.horizon
+    )
     ranges = future_extrema(market, config.horizon)
     spread_labels = next_day_spread(market)
     classifier = train_classifier(features, labels, config)
@@ -138,7 +154,7 @@ def run_analysis(
     )
     support, resistance = estimate_levels(
         market,
-        lookback=min(config.level_lookback, max(20, len(market) // 2)),
+        lookback=min(level_lookback, max(20, len(market) // 2)),
         atr_period=config.atr_window,
     )
     probabilities = {
@@ -173,8 +189,16 @@ def run_analysis(
         transaction_cost_bps,
         confidence_margin,
     )
+    historical_advice = _historical_advice_frame(
+        recommendations,
+        labels,
+        market,
+        config.horizon,
+    )
     backtest = run_backtest(
-        market, recommendations, transaction_cost_bps=transaction_cost_bps
+        market,
+        historical_advice["action"],
+        transaction_cost_bps=transaction_cost_bps,
     )
     minimum_risk = (
         ranges["future_min_return"]
@@ -192,27 +216,59 @@ def run_analysis(
     )
     as_of = pd.Timestamp(market.index[-1])
     now = pd.Timestamp(datetime.now(UTC)).tz_localize(None)
-    return AnalysisResult(
-        market,
-        as_of,
-        current_price,
-        support,
-        resistance,
-        probabilities,
-        signal,
-        base_signal,
-        emotion,
-        news,
-        classifier.validation,
-        range_model,
-        range_model.summary,
-        spread_model,
-        spread_model.summary,
-        backtest,
-        strategy_lab,
-        int(labels.notna().sum()),
-        bool(now.normalize() - as_of.normalize() > pd.Timedelta(days=5)),
+    eligible_labels = max(1, len(market) - config.horizon)
+    stale_sessions = len(
+        pd.bdate_range(as_of.normalize() + pd.Timedelta(days=1), now.normalize())
     )
+    return AnalysisResult(
+        symbol=config.symbol,
+        bars=market,
+        benchmark_bars=market_bundle.spy,
+        as_of=as_of,
+        loaded_at=now,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        probabilities=probabilities,
+        signal=signal,
+        base_signal=base_signal,
+        emotion=emotion,
+        news=news,
+        validation=classifier.validation,
+        range_model=range_model,
+        range_summary=range_model.summary,
+        spread_model=spread_model,
+        spread_summary=spread_model.summary,
+        backtest=backtest,
+        historical_advice=historical_advice,
+        strategy_lab=strategy_lab,
+        sample_count=int(labels.notna().sum()),
+        ambiguous_label_count=ambiguous_labels,
+        ambiguous_label_rate=ambiguous_labels / eligible_labels,
+        data_is_stale=stale_sessions > 2,
+    )
+
+
+def _historical_advice_frame(
+    recommendations: pd.Series,
+    labels: pd.Series,
+    bars: pd.DataFrame,
+    horizon: int,
+) -> pd.DataFrame:
+    """Pair fold-held-out technical advice with outcomes known only afterward."""
+    frame = pd.DataFrame({"action": recommendations.astype(str)})
+    frame["actual_outcome"] = labels.reindex(frame.index)
+    expected_outcome = frame["action"].map(
+        {
+            Guidance.BUY.value: "upper_first",
+            Guidance.HOLD.value: "neither",
+            Guidance.SELL_REDUCE.value: "lower_first",
+        }
+    )
+    frame["correct"] = expected_outcome.eq(frame["actual_outcome"])
+    future_return = bars["Close"].shift(-horizon) / bars["Close"] - 1.0
+    frame["future_return"] = future_return.reindex(frame.index)
+    return frame.dropna(subset=["actual_outcome", "future_return"])
 
 
 def _oos_recommendations(

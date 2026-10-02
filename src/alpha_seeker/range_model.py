@@ -26,6 +26,10 @@ class RangeDiagnostics:
     selected_maximum_model: str
     validation_rows: int
     folds: int
+    minimum_80_coverage: float = float("nan")
+    maximum_80_coverage: float = float("nan")
+    validation_start: pd.Timestamp | None = None
+    validation_end: pd.Timestamp | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,12 +204,32 @@ def train_range_model(
         maximum_models[q].predict(latest)[0] + adjustment
         for q, adjustment in zip(REQUIRED_QUANTILES, max_adjustments, strict=True)
     ]
+    min_coverage, min_folds, validation_start, validation_end = (
+        _walk_forward_interval_coverage(
+            x,
+            y_min,
+            validation_rows,
+            int(cfg.horizon),
+            int(cfg.random_state),
+        )
+    )
+    max_coverage, max_folds, _, _ = _walk_forward_interval_coverage(
+        x,
+        y_max,
+        validation_rows,
+        int(cfg.horizon),
+        int(cfg.random_state),
+    )
     diagnostics = RangeDiagnostics(
-        pd.DataFrame(comparisons),
-        min_selected,
-        max_selected,
-        validation_rows if train_end >= 20 else 0,
-        1 if train_end >= 20 else 0,
+        model_comparison=pd.DataFrame(comparisons),
+        selected_minimum_model=min_selected,
+        selected_maximum_model=max_selected,
+        validation_rows=validation_rows if train_end >= 20 else 0,
+        folds=min(min_folds, max_folds),
+        minimum_80_coverage=min_coverage,
+        maximum_80_coverage=max_coverage,
+        validation_start=validation_start,
+        validation_end=validation_end,
     )
     return RangeModel(
         current_price,
@@ -222,6 +246,48 @@ def train_range_model(
 
 
 fit_range_model = train_range_model
+
+
+def _walk_forward_interval_coverage(
+    x: pd.DataFrame,
+    y: pd.Series,
+    validation_rows: int,
+    horizon: int,
+    random_state: int,
+    *,
+    max_folds: int = 3,
+) -> tuple[float, int, pd.Timestamp | None, pd.Timestamp | None]:
+    """Evaluate a fast empirical 80% benchmark on expanding chronological folds."""
+    coverages: list[np.ndarray] = []
+    indexes: list[pd.Index] = []
+    first_start = max(20 + horizon, len(x) - max_folds * validation_rows)
+    for validation_start in range(first_start, len(x), validation_rows):
+        train_end = validation_start - horizon
+        validation_end = min(validation_start + validation_rows, len(x))
+        if train_end < 20 or validation_end <= validation_start:
+            continue
+        lower_model = _fit_estimator(
+            0.10, x.iloc[:train_end], y.iloc[:train_end], False, random_state
+        )
+        upper_model = _fit_estimator(
+            0.90, x.iloc[:train_end], y.iloc[:train_end], False, random_state
+        )
+        validation_x = x.iloc[validation_start:validation_end]
+        validation_y = y.iloc[validation_start:validation_end]
+        coverages.append(
+            (validation_y.to_numpy() >= lower_model.predict(validation_x))
+            & (validation_y.to_numpy() <= upper_model.predict(validation_x))
+        )
+        indexes.append(validation_x.index)
+    if not coverages:
+        return float("nan"), 0, None, None
+    combined = np.concatenate(coverages)
+    return (
+        float(combined.mean()),
+        len(coverages),
+        pd.Timestamp(indexes[0][0]),
+        pd.Timestamp(indexes[-1][-1]),
+    )
 
 
 def _select_and_calibrate(
